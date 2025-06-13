@@ -1,0 +1,100 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Jun  9 17:26:06 2025
+
+@author: and_s
+"""
+import pandas as pd
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.interpolate import Rbf
+import contextily as ctx
+import os
+
+# Carregar os dados
+csv_path = r'C:\Users\and_s\Downloads\TEEP\quantidade_dias_precipitacao_GPM.csv'
+dados_chuva = pd.read_csv(csv_path,sep=';', encoding='latin1')
+shape_bairros = gpd.read_file(r'C:\Users\and_s\Downloads\TEEP\RJ_Municipios_2024\Limite_de_Bairros.shp')
+
+# Converter coordenadas para numéricas
+dados_chuva['latitude'] = dados_chuva['latitude'].str.replace(',', '.').astype(float)
+dados_chuva['longitude'] = dados_chuva['longitude'].str.replace(',', '.').astype(float)
+
+output_dir = os.path.join(os.path.dirname(csv_path), 'mapas_limiares_gpm')
+os.makedirs(output_dir, exist_ok=True)
+
+# Criar GeoDataFrame para as estações
+estacoes = gpd.GeoDataFrame(
+    dados_chuva,
+    geometry=gpd.points_from_xy(dados_chuva.longitude, dados_chuva.latitude),
+    crs=4326
+).to_crs(shape_bairros.crs)
+
+# Função para criar mapa interpolado
+def criar_mapa_interpolado(coluna, titulo):
+    fig, ax = plt.subplots(figsize=(12, 10))
+    
+    # Plotar o shapefile dos bairros
+    shape_bairros.plot(ax=ax, color='none', edgecolor='black', alpha=0.3)
+    
+    # Preparar dados para interpolação
+    x = estacoes.geometry.x.values
+    y = estacoes.geometry.y.values
+    z = estacoes[coluna].values
+    
+    # Criar grid para interpolação
+    xmin, ymin, xmax, ymax = shape_bairros.total_bounds
+    grid_x, grid_y = np.mgrid[xmin:xmax:500j, ymin:ymax:500j]
+    
+    # Interpolação usando Radial Basis Function
+    rbf = Rbf(x, y, z, function='linear')
+    grid_z = rbf(grid_x, grid_y)
+    
+    # Criar máscara para área fora dos bairros
+    pontos_grid = gpd.points_from_xy(grid_x.flatten(), grid_y.flatten())
+    mask = shape_bairros.geometry.unary_union.contains(pontos_grid)
+    grid_z[~mask.reshape(grid_x.shape)] = np.nan
+    
+    # Plotar a interpolação
+    im = ax.imshow(grid_z.T, extent=(xmin, xmax, ymin, ymax), origin='lower',
+                  cmap='viridis_r', alpha=0.7, vmin=z.min(), vmax=z.max())
+    
+    # Barra de cores
+    cbar = fig.colorbar(im, ax=ax, shrink=0.5)
+    cbar.set_label(f'Dias com precipitação {titulo}', fontweight='bold')
+    
+    # Plotar as estações
+    estacoes.plot(ax=ax, color='red', markersize=50, alpha=0.7)
+    for idx, row in estacoes.iterrows():
+        ax.text(row.geometry.x, row.geometry.y, 
+                f"{int(row[coluna])} dias",
+                fontsize=8, ha='center', va='bottom', color='black',
+                bbox=dict(facecolor='white', alpha=0.7, edgecolor='none'))
+    
+    # Mapa de fundo
+    # ctx.add_basemap(ax, crs=shape_bairros.crs)
+    
+    # Configurações
+    ax.set_title(f'Dias com precipitação {titulo}', fontweight='bold')
+    ax.set_axis_off()
+    # ax.grid(True, color='gray', linestyle='--', alpha=0.5)
+    # ax.set_xlabel('Longitude',fontweight='bold')
+    # ax.set_ylabel('Latitude',fontweight='bold')
+    plt.tight_layout()
+    output_path = os.path.join(output_dir, f'mapa_{titulo.replace(">","maior_que").replace(" ", "_")}.png')
+    plt.savefig(output_path, dpi=300)
+    plt.show()
+
+# Criar mapas para cada limiar
+limiares = {
+    'Dias >1mm': '> 1mm',
+    'Dias >5mm': '> 5mm',
+    'Dias >10mm': '> 10mm',
+    'Dias >25mm': '> 25mm',
+    'Dias >50mm': '> 50mm',
+    'Dias >100mm': '> 100mm'
+}
+
+for coluna, titulo in limiares.items():
+    criar_mapa_interpolado(coluna, titulo)
